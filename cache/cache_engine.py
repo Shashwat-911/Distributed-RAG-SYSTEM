@@ -388,8 +388,14 @@ class ShardedAeroCache:
 
         self._hits: int = 0
         self._misses: int = 0
+        self._semantic_hits: int = 0
         self._epoch: int = 1
         self._stats_lock: threading.Lock = threading.Lock()
+
+        # Semantic Vector Cache Store
+        self._semantic_entries: List[Dict[str, Any]] = []
+        self._semantic_lock: threading.Lock = threading.Lock()
+        self._max_semantic_capacity: int = 500
 
     def _get_partition(self, key: str) -> LRUCache:
         """Determines responsible partition via consistent hashing."""
@@ -409,15 +415,124 @@ class ShardedAeroCache:
                 self._misses += 1
         return val
 
+    def get_semantic(
+        self,
+        exact_key: str,
+        query_vector: Optional[Any] = None,
+        similarity_threshold: float = 0.88,
+    ) -> Tuple[Optional[Any], float, str]:
+        """
+        Retrieves cached response via exact key match or semantic vector similarity.
+
+        Args:
+            exact_key: Deterministic cache key string.
+            query_vector: Dense query embedding vector.
+            similarity_threshold: Minimum cosine similarity required for a semantic cache hit (default 0.88).
+
+        Returns:
+            Tuple of (response_value, similarity_score, hit_type)
+            where hit_type is 'exact', 'semantic', or 'miss'.
+        """
+        # 1. Check exact O(1) partition match
+        partition = self._get_partition(exact_key)
+        exact_val = partition.get(exact_key)
+        if exact_val is not None:
+            with self._stats_lock:
+                self._hits += 1
+            return exact_val, 1.0, "exact"
+
+        # 2. Check semantic vector similarity
+        if query_vector is not None and len(self._semantic_entries) > 0:
+            import numpy as np
+            q_vec = np.asarray(query_vector, dtype=np.float32)
+            q_norm = np.linalg.norm(q_vec)
+            if q_norm > 0:
+                q_unit = q_vec / q_norm
+                now = time.time()
+
+                with self._semantic_lock:
+                    # Clean expired entries
+                    self._semantic_entries = [
+                        e for e in self._semantic_entries
+                        if e.get("expiry_time") is None or now <= e["expiry_time"]
+                    ]
+
+                    if self._semantic_entries:
+                        vectors = np.stack([e["vector"] for e in self._semantic_entries])
+                        # Vectors are stored unit-normalized, so dot product = cosine similarity
+                        sims = np.dot(vectors, q_unit)
+                        best_idx = int(np.argmax(sims))
+                        best_sim = float(sims[best_idx])
+
+                        if best_sim >= similarity_threshold:
+                            matched_entry = self._semantic_entries[best_idx]
+                            matched_entry["last_accessed"] = now
+                            matched_entry["access_count"] = matched_entry.get("access_count", 1) + 1
+                            with self._stats_lock:
+                                self._hits += 1
+                                self._semantic_hits += 1
+                            return matched_entry["response"], best_sim, "semantic"
+
+        with self._stats_lock:
+            self._misses += 1
+        return None, 0.0, "miss"
+
     def put(self, key: str, value: Any, ttl: Optional[float] = None) -> None:
         """Inserts or updates entry in responsible partition."""
         partition = self._get_partition(key)
         target_ttl = ttl if ttl is not None else self.default_ttl
         partition.put(key, value, ttl=target_ttl)
 
+    def put_semantic(
+        self,
+        key: str,
+        query_text: str,
+        query_vector: Optional[Any],
+        response: Any,
+        ttl: Optional[float] = None,
+    ) -> None:
+        """
+        Stores response in both exact partition cache and semantic vector index.
+
+        Args:
+            key: Deterministic cache key string.
+            query_text: Raw user question.
+            query_vector: Query embedding vector.
+            response: Response payload.
+            ttl: Time to live in seconds.
+        """
+        self.put(key, response, ttl=ttl)
+
+        if query_vector is not None:
+            import numpy as np
+            q_vec = np.asarray(query_vector, dtype=np.float32)
+            q_norm = np.linalg.norm(q_vec)
+            if q_norm > 0:
+                unit_vec = q_vec / q_norm
+                now = time.time()
+                expiry = (now + ttl) if (ttl is not None and ttl > 0) else None
+
+                with self._semantic_lock:
+                    # Enforce capacity
+                    if len(self._semantic_entries) >= self._max_semantic_capacity:
+                        self._semantic_entries.pop(0)
+
+                    self._semantic_entries.append({
+                        "key": key,
+                        "query_text": query_text,
+                        "vector": unit_vec,
+                        "response": response,
+                        "created_at": now,
+                        "last_accessed": now,
+                        "access_count": 1,
+                        "expiry_time": expiry,
+                    })
+
     def delete(self, key: str) -> bool:
         """Deletes a key from its responsible partition."""
         partition = self._get_partition(key)
+        with self._semantic_lock:
+            self._semantic_entries = [e for e in self._semantic_entries if e.get("key") != key]
         return partition.delete(key)
 
     def clear(self) -> None:
@@ -425,8 +540,11 @@ class ShardedAeroCache:
         with self._stats_lock:
             for p in self._partitions.values():
                 p.clear()
+            with self._semantic_lock:
+                self._semantic_entries.clear()
             self._hits = 0
             self._misses = 0
+            self._semantic_hits = 0
             self._epoch += 1
 
     def stats(self) -> Dict[str, Any]:
@@ -445,6 +563,8 @@ class ShardedAeroCache:
                 "virtual_nodes_per_partition": self.ring.virtual_nodes,
                 "hits": self._hits,
                 "misses": self._misses,
+                "semantic_hits": self._semantic_hits,
+                "semantic_entries": len(self._semantic_entries),
                 "hit_rate": hit_rate,
                 "evictions": total_evictions,
                 "predictive_evictions": total_predictive,
