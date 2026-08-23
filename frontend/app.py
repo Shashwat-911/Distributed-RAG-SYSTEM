@@ -184,7 +184,8 @@ with tab_chat:
 
                 c1.metric("Retrieval Latency", f"{ret_ms:.1f} ms")
                 c2.metric("Generation Latency", f"{gen_ms:.1f} ms")
-                c3.metric("Cache / Model", "⚡ CACHED" if cached else f"🤖 {model_used}")
+                cache_label = f"⚡ SEMANTIC CACHE ({model_used})" if (cached and "semantic" in model_used) else ("⚡ CACHED" if cached else f"🤖 {model_used}")
+                c3.metric("Cache / Model", cache_label)
 
     # Chat Input Box
     user_query = st.chat_input("Ask a question about the indexed corpus...")
@@ -218,7 +219,8 @@ with tab_chat:
                 c1, c2, c3 = st.columns(3)
                 c1.metric("Retrieval Latency", f"{ret_ms:.1f} ms")
                 c2.metric("Generation Latency", f"{gen_ms:.1f} ms")
-                c3.metric("Cache / Model", "⚡ CACHED" if cached else f"🤖 {model_used}")
+                cache_label = f"⚡ SEMANTIC CACHE ({model_used})" if (cached and "semantic" in model_used) else ("⚡ CACHED" if cached else f"🤖 {model_used}")
+                c3.metric("Cache / Model", cache_label)
 
                 st.session_state["chat_history"].append({
                     "role": "assistant",
