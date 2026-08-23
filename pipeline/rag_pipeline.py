@@ -582,21 +582,55 @@ class RAGPipeline:
             OllamaUnavailableError: If all Ollama models are unreachable.
         """
         cache_key = self._cache_key(user_query, mode, top_k)
+        query_vector = EmbeddingEngine.embed(user_query)
 
-        cached_response = self._cache.get(cache_key)
+        # 1. Semantic AeroCache lookup
+        cached_response, similarity, hit_type = self._cache.get_semantic(
+            exact_key=cache_key,
+            query_vector=query_vector,
+            similarity_threshold=0.88,
+        )
+
         if cached_response is not None:
+            model_tag = cached_response.get("model_used", "cached")
+            if hit_type == "semantic":
+                model_tag = f"{model_tag} (semantic: {similarity:.0%})"
+
             return RAGResponse(
                 answer=cached_response["answer"],
                 sources=cached_response["sources"],
                 cached=True,
-                model_used=cached_response["model_used"],
+                model_used=model_tag,
                 retrieval_time_ms=0.0,
                 generation_time_ms=0.0,
             )
 
+        # 2. NexusSearch MapReduce retrieval
         t0 = time.perf_counter()
-        sources = self._store.search(user_query, top_k=top_k, mode=mode)
+        raw_results = self._store._retrieval.search(
+            query_text=user_query,
+            query_vector=query_vector,
+            top_k=top_k,
+            mode=mode,
+        )
         retrieval_ms = (time.perf_counter() - t0) * 1000.0
+
+        sources: List[SearchResult] = []
+        for chunk_id, score in raw_results:
+            parts = str(chunk_id).split("::chunk::")
+            doc_id = parts[0] if parts else str(chunk_id)
+            chunk_text = ""
+            with self._store._lock:
+                for cid, ctxt in self._store._chunk_map.get(doc_id, []):
+                    if cid == chunk_id:
+                        chunk_text = ctxt
+                        break
+            sources.append(SearchResult(
+                doc_id=doc_id,
+                chunk_text=chunk_text,
+                score=score,
+                source=mode,
+            ))
 
         context_parts: List[str] = []
         for i, src in enumerate(sources, 1):
@@ -613,9 +647,11 @@ class RAGPipeline:
 
         model_used = self._llm.last_model_used
 
-        self._cache.put(
-            cache_key,
-            {"answer": answer, "sources": sources, "model_used": model_used},
+        self._cache.put_semantic(
+            key=cache_key,
+            query_text=user_query,
+            query_vector=query_vector,
+            response={"answer": answer, "sources": sources, "model_used": model_used},
             ttl=_CACHE_TTL,
         )
 
