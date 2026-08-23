@@ -363,8 +363,9 @@ async def health_check() -> HealthResponse:
     ollama_connected = pipeline._llm.health_check()
     with pipeline.store._lock:
         docs_indexed = len(pipeline.store._documents)
-    with pipeline._cache._lock:
-        cache_size = len(pipeline._cache._cache)
+    
+    stats = pipeline.cache.stats() if hasattr(pipeline, "cache") else {"size": 0}
+    cache_size = stats.get("size", 0)
 
     app_status = "healthy" if ollama_connected else "degraded"
     return HealthResponse(
@@ -378,8 +379,14 @@ async def health_check() -> HealthResponse:
 @app.get("/cache/stats", response_model=CacheStatsResponse, status_code=status.HTTP_200_OK)
 async def cache_stats() -> CacheStatsResponse:
     pipeline = _get_pipeline()
-    with pipeline._cache._lock:
-        cache_size = len(pipeline._cache._cache)
+    if hasattr(pipeline, "cache"):
+        stats = pipeline.cache.stats()
+        return CacheStatsResponse(
+            hits=stats["hits"],
+            misses=stats["misses"],
+            hit_rate=round(stats["hit_rate"], 4),
+            size=stats["size"],
+        )
     hits = getattr(app.state, "cache_hits", 0)
     misses = getattr(app.state, "cache_misses", 0)
     total = hits + misses
@@ -389,17 +396,15 @@ async def cache_stats() -> CacheStatsResponse:
         hits=hits,
         misses=misses,
         hit_rate=round(hit_rate, 4),
-        size=cache_size,
+        size=0,
     )
 
 
 @app.post("/cache/clear", response_model=CacheClearResponse, status_code=status.HTTP_200_OK)
 async def clear_cache() -> CacheClearResponse:
     pipeline = _get_pipeline()
-    with pipeline._cache._lock:
-        pipeline._cache._cache.clear()
-        pipeline._cache._head.next = pipeline._cache._tail
-        pipeline._cache._tail.prev = pipeline._cache._head
+    if hasattr(pipeline, "cache"):
+        pipeline.cache.clear()
     app.state.cache_hits = 0
     app.state.cache_misses = 0
 
