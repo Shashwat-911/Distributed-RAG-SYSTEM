@@ -24,37 +24,44 @@ DistributedRAG contains zero third-party vector databases or wrapper frameworks:
 User Query
     │
     ▼
-LRUCache (O(1) TTL lookup) ──── HIT ──── Cached Response
-    │ MISS
+AeroCache Distributed Partition Engine
+├── ConsistentHashRing (150 virtual nodes per partition)
+├── Sharded LRUCache Partitions with O(1) Intrusive DLL
+├── Predictive AI Cold-Key Eviction with LRU Fallback
+└── Hit/Miss & Epoch Metrics Tracker
+    │ (MISS)
     ▼
 EmbeddingEngine (all-MiniLM-L6-v2, 128-dim)
     │
     ▼
-RetrievalEngine
-├── InvertedIndex (TF-IDF from scratch)
-├── KDTree (variance-split, cosine similarity)
-└── Hybrid fusion (α=0.5)
+NexusSearch MapReduce Retrieval Engine
+├── Sharded Posting List InvertedIndex (Sublinear TF-IDF + Length Norm)
+├── Variance-Split KD-Tree (Vectorized Cosine Distance + Branch Pruning)
+├── MapReduce Parallel Retrieval (Concurrent Executor across shards)
+└── Reciprocal Rank Fusion (RRF) + Alpha Dense-Sparse Hybrid Blending
     │
     ▼
-OllamaClient (qwen2.5-coder → codellama fallback)
+Ollama Generator (qwen2.5-coder:1.5b → codellama fallback)
     │
     ▼
-Grounded Answer + Sources
+Grounded Answer + Ranked Sources
 ```
 
 ---
 
 ## Core Algorithms
 
-| Module | Algorithm | Complexity |
-|---|---|---|
-| `cache_engine.py` | `ConsistentHashRing` (MD5, 150 vnodes) | Lookup: $O(\log (N \cdot V))$ time, $O(N \cdot V)$ space |
-| `cache_engine.py` | `LRUCache` (doubly linked list + hashmap) | Get / Put / Evict: $O(1)$ time, $O(C)$ space |
-| `cache_engine.py` | `LeakyBucketRateLimiter` (`threading.Condition`) | Acquire: $O(1)$ time, $O(1)$ space |
-| `retrieval_engine.py` | `InvertedIndex` TF-IDF | Build: $O(D \cdot L)$, Query: $O(\|Q\| \cdot \text{df}_{\text{avg}} + K \log K)$ |
-| `retrieval_engine.py` | `KDTree` KNN (variance split, cosine metric) | Build: $O(D \cdot N \log N)$, Search: $O(\log N)$ avg / $O(N)$ worst |
-| `diff_engine.py` | `Hirschberg LCS` (space-optimized divide-and-conquer) | Time: $O(M \cdot N)$, Space: $O(\min(M, N))$ |
-| `diff_engine.py` | `DeltaExtractor` (chunk-level + char-level) | Time: $O(C_1 \cdot C_2 + U \cdot \Delta)$, Space: $O(C_1 + C_2)$ |
+| Module | Architecture | Algorithm | Complexity |
+|---|---|---|---|
+| `cache_engine.py` | **AeroCache** | `ConsistentHashRing` (MD5, 150 vnodes) | Lookup: $O(\log (N \cdot V))$ time, $O(N \cdot V)$ space |
+| `cache_engine.py` | **AeroCache** | `ShardedAeroCache` (Multi-partition O(1) DLL) | Get / Put: $O(1)$ time, Zero lock contention |
+| `cache_engine.py` | **AeroCache** | `PredictiveEvictionPolicy` (Frequency-Recency Decay) | Eval: $O(1)$ time, proactive cold-key purge |
+| `cache_engine.py` | **AeroCache** | `LeakyBucketRateLimiter` (`threading.Condition`) | Acquire: $O(1)$ time, $O(1)$ space |
+| `retrieval_engine.py` | **NexusSearch** | `NexusInvertedIndex` (Sublinear TF-IDF $1+\ln(\text{tf})$) | Build: $O(D \cdot L)$, Query: $O(|Q| \cdot \text{df}_{\text{avg}} + K \log K)$ |
+| `retrieval_engine.py` | **NexusSearch** | `NexusKDTree` (Vectorized Cosine + Pruning) | Build: $O(D \cdot N \log N)$, Search: $O(\log N)$ avg |
+| `retrieval_engine.py` | **NexusSearch** | MapReduce `RetrievalEngine` (Threaded RRF Fusion) | Parallel Map: $O(1)$ threads, RRF merge: $O(K \log K)$ |
+| `diff_engine.py` | **DiffEngine** | `Hirschberg LCS` (Space-optimized divide-and-conquer) | Time: $O(M \cdot N)$, Space: $O(\min(M, N))$ |
+| `diff_engine.py` | **DiffEngine** | `DeltaExtractor` (Chunk-level + char-level diff) | Time: $O(C_1 \cdot C_2 + U \cdot \Delta)$, Space: $O(C_1 + C_2)$ |
 
 ---
 
@@ -156,13 +163,13 @@ A live demo video showing end-to-end RAG query, delta document update, and retri
 
 ## What I Built from Scratch
 
-- **ConsistentHashRing**: Built from scratch using MD5 hashing and virtual nodes to distribute cache keys uniformly across partitions while minimizing remapping during node additions or removals.
-- **LRUCache**: Built with a custom doubly linked list and hash map to achieve strictly $O(1)$ lookups, insertions, and evictions alongside millisecond-level TTL expiration.
+- **AeroCache Sharded Engine & ConsistentHashRing**: Built from scratch using MD5 hashing and 150 virtual nodes per partition to distribute cache keys across independent shards with zero lock contention.
+- **Predictive AI Eviction Policy**: Built from scratch using frequency-recency exponential decay metrics to identify and purge cold keys before memory saturation, with $O(1)$ LRU fallback.
 - **LeakyBucketRateLimiter**: Built using `threading.Condition` and continuous leak rate calculation to enforce smooth request rate limits across concurrent worker threads without external dependencies.
-- **InvertedIndex TF-IDF**: Built from scratch to maintain exact term-frequency matrices, inverse-document frequencies, and sparse vector representations for sub-millisecond lexical search.
-- **KDTree**: Built from scratch using variance-based dimension splitting and recursive pruning to perform exact $k$-nearest neighbor search across cosine embedding spaces.
-- **Hirschberg LCS**: Built using linear-space divide-and-conquer dynamic programming to compute longest common subsequences in $O(\min(M, N))$ space rather than standard quadratic $O(M \cdot N)$ memory.
-- **DeltaExtractor**: Built from scratch to identify granular chunk additions, modifications, and deletions so document updates only re-embed modified text rather than re-indexing entire corpora.
+- **NexusSearch InvertedIndex**: Built from scratch with sublinear TF-IDF ($1 + \ln(\text{tf})$), term posting lists, and cosine document length normalization for sub-millisecond keyword retrieval.
+- **NexusSearch KDTree**: Built from scratch using variance-based dimension splitting, NumPy vectorized cosine distance calculation, and bounding-box pruning for exact $k$-nearest neighbor search.
+- **NexusSearch MapReduce Fusion**: Built from scratch using thread-level concurrent fan-out and Reciprocal Rank Fusion (RRF) to combine sparse and dense signals.
+- **Hirschberg LCS & DeltaExtractor**: Built using linear-space divide-and-conquer dynamic programming to compute longest common subsequences in $O(\min(M, N))$ space and re-index only modified text.
 
 ---
 
