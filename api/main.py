@@ -274,36 +274,14 @@ async def query_pipeline(payload: QueryRequest) -> QueryResponse:
     pipeline = _get_pipeline()
 
     try:
-        cache_key = pipeline._cache_key(payload.query, mode, payload.top_k)
-
         if payload.use_cache:
-            cached_val = pipeline._cache.get(cache_key)
-            if cached_val is not None:
-                app.state.cache_hits += 1
-                return QueryResponse(
-                    answer=cached_val["answer"],
-                    sources=[
-                        SearchResultModel(
-                            doc_id=s.doc_id,
-                            chunk_text=s.chunk_text,
-                            score=s.score,
-                            source=s.source,
-                        )
-                        for s in cached_val["sources"]
-                    ],
-                    cached=True,
-                    model_used=cached_val["model_used"],
-                    retrieval_time_ms=0.0,
-                    generation_time_ms=0.0,
-                )
-
-            app.state.cache_misses += 1
             response = pipeline.query(
                 user_query=payload.query,
                 top_k=payload.top_k,
                 mode=mode,
             )
         else:
+            query_vector = pipeline.store._retrieval._tree and None
             t0 = time.perf_counter()
             sources = pipeline.store.search(payload.query, top_k=payload.top_k, mode=mode)
             retrieval_ms = (time.perf_counter() - t0) * 1000.0
