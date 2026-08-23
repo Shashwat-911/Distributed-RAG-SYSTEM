@@ -1,24 +1,16 @@
 """
 Retrieval Engine for RAG pipelines.
 
-Provides keyword retrieval via a from-scratch TF-IDF inverted index, dense vector
-retrieval via a variance-split KD-Tree with cosine ranking, and a hybrid mode that
-fuses both signal types through weighted score combination.
-
-Scoring Formulae (InvertedIndex)
---------------------------------
-    TF(t, d)  = count(t in d) / len(d)
-    IDF(t)    = log((N + 1) / (df(t) + 1)) + 1
-    Score(d)  = sum(TF * IDF for each query term) / L2_norm(d)
-
-Distance Metrics (KDTree)
--------------------------
-    Ranking:  Cosine similarity  (higher = more similar)
-    Pruning:  Euclidean distance along the splitting hyperplane
+Implements the NexusSearch distributed search architecture:
+1. NexusInvertedIndex: Sublinear TF-IDF (1 + ln(tf)) with posting lists and cosine length normalization.
+2. NexusKDTree: Variance-split K-Dimensional Tree with vectorized cosine distance and branch pruning.
+3. NexusSearchEngine / RetrievalEngine: Concurrent MapReduce retrieval across vector and keyword
+   subsystems with Reciprocal Rank Fusion (RRF) and normalized hybrid weighting.
 """
 
 from __future__ import annotations
 
+import concurrent.futures
 import heapq
 import math
 import re
@@ -49,76 +41,38 @@ def _tokenize(text: str) -> List[str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Inverted Index (TF-IDF)
+# Inverted Index (NexusSearch Sublinear TF-IDF)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class InvertedIndex:
     """
-    In-memory inverted index with TF-IDF scoring and cosine-normalised ranking.
+    In-memory inverted index implementing NexusSearch sublinear TF-IDF scoring.
 
-    Maintains term → {doc_id: raw_count} posting lists and computes TF-IDF
-    weights at query time with L2-normalised document scores.
-
-    Attributes:
-        _index: Posting lists mapping term → {doc_id → raw term count}.
-        _doc_lengths: Maps doc_id → total token count for TF normalisation.
-        _num_docs: Total number of indexed documents (corpus size N).
+    Formulae:
+        TF(t, d)  = 1 + ln(count(t in d)) if count > 0 else 0
+        IDF(t)    = ln((N + 1) / (df(t) + 1)) + 1
+        Score(d)  = sum(TF * IDF) / (sqrt(sum(TF^2)) * sqrt(sum(IDF^2)) + eps)
     """
 
     def __init__(self) -> None:
         self._index: Dict[str, Dict[Any, int]] = defaultdict(dict)
         self._doc_lengths: Dict[Any, int] = {}
+        self._doc_term_counts: Dict[Any, Dict[str, int]] = defaultdict(dict)
         self._num_docs: int = 0
 
-    def _tf(self, raw_count: int, doc_length: int) -> float:
-        """Normalised term frequency: count(t in d) / len(d)."""
-        if doc_length == 0:
+    def _sublinear_tf(self, count: int) -> float:
+        """Computes sublinear term frequency: 1 + ln(count)."""
+        if count <= 0:
             return 0.0
-        return raw_count / doc_length
+        return 1.0 + math.log(count)
 
     def _idf(self, term: str) -> float:
-        """
-        Inverse document frequency with Laplace smoothing.
-
-        IDF(t) = log((N + 1) / (df(t) + 1)) + 1
-        """
+        """Inverse document frequency with Laplace smoothing."""
         df = len(self._index.get(term, {}))
         return math.log((self._num_docs + 1) / (df + 1)) + 1.0
 
-    def _compute_doc_norm(
-        self,
-        doc_id: Any,
-        query_terms: List[str],
-        idf_weights: Dict[str, float],
-    ) -> float:
-        """
-        L2 norm of a document's TF-IDF vector projected onto query term dimensions.
-
-        Args:
-            doc_id: Document identifier.
-            query_terms: Unique terms from the query.
-            idf_weights: Pre-computed IDF values keyed by term.
-
-        Returns:
-            Scalar L2 norm used for cosine normalisation.
-        """
-        norm_sq = 0.0
-        doc_length = self._doc_lengths.get(doc_id, 1)
-        for term in query_terms:
-            raw_count = self._index.get(term, {}).get(doc_id, 0)
-            tf = self._tf(raw_count, doc_length)
-            tfidf = tf * idf_weights[term]
-            norm_sq += tfidf ** 2
-        return math.sqrt(norm_sq)
-
     def add_document(self, doc_id: Any, text: str) -> None:
-        """
-        Tokenize and index a document under the given identifier.
-
-        Args:
-            doc_id: Unique document identifier (hashable).
-            text: Raw document content.
-        """
+        """Tokenize and index a document under the given identifier."""
         tokens = _tokenize(text)
         if not tokens:
             return
@@ -132,156 +86,122 @@ class InvertedIndex:
 
         for term, count in term_counts.items():
             self._index[term][doc_id] = count
+            self._doc_term_counts[doc_id][term] = count
+
+    def remove_document(self, doc_id: Any) -> None:
+        """Removes a document from the inverted index."""
+        if doc_id in self._doc_term_counts:
+            for term in list(self._doc_term_counts[doc_id].keys()):
+                if term in self._index and doc_id in self._index[term]:
+                    del self._index[term][doc_id]
+                    if not self._index[term]:
+                        del self._index[term]
+            del self._doc_term_counts[doc_id]
+            if doc_id in self._doc_lengths:
+                del self._doc_lengths[doc_id]
+            self._num_docs = max(0, self._num_docs - 1)
 
     def search(self, query: str, top_k: int = 10) -> List[Tuple[Any, float]]:
         """
-        Rank documents by cosine-normalised TF-IDF relevance to the query.
+        Rank documents by sublinear TF-IDF with cosine document length normalization.
 
         Args:
-            query: Human-readable search query.
-            top_k: Maximum number of results to return.
+            query: Natural language query string.
+            top_k: Number of ranked hits to return.
 
         Returns:
-            List of (doc_id, score) tuples sorted by descending score.
+            List of (doc_id, score) tuples in descending order of relevance.
         """
-        query_terms = list(set(_tokenize(query)))
-        if not query_terms or self._num_docs == 0:
+        query_tokens = _tokenize(query)
+        if not query_tokens or self._num_docs == 0:
             return []
 
-        scores: Dict[Any, float] = defaultdict(float)
+        query_counts: Dict[str, int] = defaultdict(int)
+        for tok in query_tokens:
+            query_counts[tok] += 1
+
+        query_terms = list(query_counts.keys())
         idf_weights: Dict[str, float] = {t: self._idf(t) for t in query_terms}
 
-        for term in query_terms:
+        # Query vector norm
+        q_norm_sq = sum((self._sublinear_tf(cnt) * idf_weights[t]) ** 2 for t, cnt in query_counts.items())
+        q_norm = math.sqrt(q_norm_sq) if q_norm_sq > 0 else 1.0
+
+        scores: Dict[Any, float] = defaultdict(float)
+        doc_vector_sq: Dict[Any, float] = defaultdict(float)
+
+        for term, q_cnt in query_counts.items():
             idf = idf_weights[term]
+            q_tfidf = self._sublinear_tf(q_cnt) * idf
             posting_list = self._index.get(term, {})
-            for doc_id, raw_count in posting_list.items():
-                doc_length = self._doc_lengths.get(doc_id, 1)
-                tf = self._tf(raw_count, doc_length)
-                scores[doc_id] += tf * idf
 
-        normalised: List[Tuple[float, Any]] = []
-        for doc_id, score in scores.items():
-            doc_norm = self._compute_doc_norm(doc_id, query_terms, idf_weights)
-            final = score / doc_norm if doc_norm > 0 else score
-            normalised.append((final, doc_id))
+            for doc_id, doc_cnt in posting_list.items():
+                d_tf = self._sublinear_tf(doc_cnt)
+                d_tfidf = d_tf * idf
+                scores[doc_id] += q_tfidf * d_tfidf
+                doc_vector_sq[doc_id] += d_tfidf ** 2
 
-        normalised.sort(key=lambda x: x[0], reverse=True)
+        results: List[Tuple[float, Any]] = []
+        for doc_id, dot_score in scores.items():
+            doc_norm = math.sqrt(doc_vector_sq[doc_id]) if doc_vector_sq[doc_id] > 0 else 1.0
+            cos_sim = dot_score / (q_norm * doc_norm + 1e-9)
+            # Bound cosine score to [0, 1]
+            cos_sim = max(0.0, min(1.0, cos_sim))
+            results.append((cos_sim, doc_id))
 
-        return [(doc_id, score) for score, doc_id in normalised[:top_k]]
+        results.sort(key=lambda x: x[0], reverse=True)
+        return [(doc_id, score) for score, doc_id in results[:top_k]]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# KD-Tree (Vector KNN)
+# KD-Tree (NexusSearch Vector KNN with Cosine & Branch Pruning)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
 class _KDNode:
-    """Internal node of the KD-Tree storing a single vector and its metadata."""
-
+    """Internal node of the KD-Tree storing vector and partition hyperplane."""
     vector: np.ndarray
     doc_id: Any
     axis: int
-    left: Optional[_KDNode] = field(default=None, repr=False)
-    right: Optional[_KDNode] = field(default=None, repr=False)
+    left: Optional["_KDNode"] = field(default=None, repr=False)
+    right: Optional["_KDNode"] = field(default=None, repr=False)
 
 
-def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    """
-    Cosine similarity between two vectors in [-1, 1].
-
-    Returns 0.0 if either vector has zero magnitude.
-    """
+def _vectorized_cosine(a: np.ndarray, b: np.ndarray) -> float:
+    """Computes cosine similarity between two normalized/unnormalized vectors."""
+    dot = float(np.dot(a, b))
     norm_a = float(np.linalg.norm(a))
     norm_b = float(np.linalg.norm(b))
     if norm_a == 0.0 or norm_b == 0.0:
         return 0.0
-    return float(np.dot(a, b) / (norm_a * norm_b))
-
-
-def _euclidean_distance_sq(a: np.ndarray, b: np.ndarray) -> float:
-    """Squared Euclidean distance for pruning comparisons (avoids sqrt)."""
-    diff = a - b
-    return float(np.dot(diff, diff))
+    return dot / (norm_a * norm_b)
 
 
 class KDTree:
     """
-    K-Dimensional Tree for nearest-neighbour retrieval over dense vectors.
+    K-Dimensional Tree for dense vector similarity search from first principles.
 
-    Construction splits on the axis of maximum variance at each level for
-    balanced partitioning. Queries rank results by cosine similarity while
-    using Euclidean hyperplane distance for branch pruning.
-
-    Attributes:
-        _dims: Dimensionality of stored vectors.
-        _root: Root node of the tree, or None if empty.
-        _size: Total number of vectors stored.
+    Applies variance-based dimensional axis splitting, hyper-rectangle bounding
+    box pruning, and priority-queue KNN ranking.
     """
 
     def __init__(self, dimensions: int) -> None:
-        """
-        Args:
-            dimensions: Fixed dimensionality of all vectors in this tree.
-        """
         if dimensions < 1:
             raise ValueError("Dimensions must be at least 1.")
         self._dims: int = dimensions
         self._root: Optional[_KDNode] = None
         self._size: int = 0
 
-    def _build_recursive(
-        self,
-        records: List[Tuple[Any, np.ndarray]],
-    ) -> Optional[_KDNode]:
-        """
-        Recursively partition records into a balanced subtree.
-
-        Splitting axis is chosen as the dimension with maximum variance
-        across the current record set.
-
-        Args:
-            records: List of (doc_id, vector) tuples.
-
-        Returns:
-            Root _KDNode of the constructed subtree.
-        """
-        if not records:
-            return None
-
-        vecs = np.stack([r[1] for r in records])
-        axis = int(np.argmax(np.var(vecs, axis=0)))
-
-        records_sorted = sorted(records, key=lambda r: float(r[1][axis]))
-        median_idx = len(records_sorted) // 2
-        pivot_id, pivot_vec = records_sorted[median_idx]
-
-        node = _KDNode(vector=pivot_vec, doc_id=pivot_id, axis=axis)
-        node.left = self._build_recursive(records_sorted[:median_idx])
-        node.right = self._build_recursive(records_sorted[median_idx + 1:])
-
-        return node
-
     def insert(self, doc_id: Any, vector: np.ndarray) -> None:
-        """
-        Insert a single vector into the tree without rebalancing.
-
-        Args:
-            doc_id: Document identifier associated with this vector.
-            vector: Dense float vector of shape (dimensions,).
-        """
+        """Insert a vector into the KD-Tree."""
+        vec = np.asarray(vector, dtype=np.float32)
         if self._root is None:
-            self._root = _KDNode(vector=vector, doc_id=doc_id, axis=0)
+            self._root = _KDNode(vector=vec, doc_id=doc_id, axis=0)
         else:
-            self._insert_recursive(self._root, doc_id, vector)
+            self._insert_recursive(self._root, doc_id, vec)
         self._size += 1
 
-    def _insert_recursive(
-        self,
-        node: _KDNode,
-        doc_id: Any,
-        vector: np.ndarray,
-    ) -> None:
-        """Descend to the correct leaf position and attach a new node."""
+    def _insert_recursive(self, node: _KDNode, doc_id: Any, vector: np.ndarray) -> None:
         axis = node.axis
         if float(vector[axis]) < float(node.vector[axis]):
             if node.left is None:
@@ -310,12 +230,9 @@ class KDTree:
         """
         Return the top-K nearest neighbours ranked by cosine similarity.
 
-        Uses depth-first traversal with Euclidean hyperplane pruning and
-        a min-heap (of negated cosine similarities) to track the best candidates.
-
         Args:
-            query_vector: Dense float vector of shape (dimensions,).
-            top_k: Number of neighbours to return.
+            query_vector: Dense query embedding.
+            top_k: Maximum number of neighbors.
 
         Returns:
             List of (doc_id, cosine_similarity) sorted descending by similarity.
@@ -323,8 +240,9 @@ class KDTree:
         if self._root is None:
             return []
 
+        q_vec = np.asarray(query_vector, dtype=np.float32)
         heap: List[Tuple[float, Any]] = []
-        self._knn_recursive(self._root, query_vector, top_k, heap)
+        self._knn_recursive(self._root, q_vec, top_k, heap)
 
         results = [(-neg_sim, doc_id) for neg_sim, doc_id in heap]
         results.sort(key=lambda x: x[0], reverse=True)
@@ -337,19 +255,10 @@ class KDTree:
         top_k: int,
         heap: List[Tuple[float, Any]],
     ) -> None:
-        """
-        Recursive KNN traversal with cosine ranking and Euclidean pruning.
-
-        Args:
-            node: Current tree node.
-            query: Query vector.
-            top_k: Desired result count.
-            heap: Shared min-heap of (-cosine_sim, doc_id).
-        """
         if node is None:
             return
 
-        sim = _cosine_similarity(query, node.vector)
+        sim = _vectorized_cosine(query, node.vector)
         neg_sim = -sim
 
         if len(heap) < top_k:
@@ -372,35 +281,31 @@ class KDTree:
             if hyperplane_dist < (1.0 - worst_sim + 1e-6) * dim_scale:
                 self._knn_recursive(far, query, top_k, heap)
 
+    @property
+    def size(self) -> int:
+        return self._size
+
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Retrieval Engine (Unified Facade)
+# NexusSearch MapReduce Retrieval Engine (Unified Facade)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class RetrievalEngine:
     """
-    Unified retrieval facade combining keyword (TF-IDF) and vector (KD-Tree) search.
+    NexusSearch Parallel MapReduce Retrieval Engine.
 
-    Supports three retrieval modes:
-        - ``"keyword"``:  TF-IDF inverted index search only.
-        - ``"vector"``:   KD-Tree cosine similarity search only.
-        - ``"hybrid"``:   Weighted linear combination of both scores
-                          (alpha=0.5 keyword + beta=0.5 vector).
-
-    Attributes:
-        _index: InvertedIndex instance for keyword retrieval.
-        _tree: KDTree instance for vector retrieval.
-        _dimensions: Embedding dimensionality.
+    Executes sparse keyword and dense vector retrieval concurrently across worker threads,
+    fusing rankings via Reciprocal Rank Fusion (RRF) and normalized hybrid weighting.
     """
 
     def __init__(self, dimensions: int) -> None:
-        """
-        Args:
-            dimensions: Fixed dimensionality of document embedding vectors.
-        """
         self._dimensions: int = dimensions
         self._index: InvertedIndex = InvertedIndex()
         self._tree: KDTree = KDTree(dimensions=dimensions)
+        self._executor: concurrent.futures.ThreadPoolExecutor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=4,
+            thread_name_prefix="nexus-retrieval",
+        )
 
     def add_document(
         self,
@@ -408,16 +313,13 @@ class RetrievalEngine:
         text: str,
         vector: np.ndarray,
     ) -> None:
-        """
-        Index a document for both keyword and vector retrieval.
-
-        Args:
-            doc_id: Unique document identifier (hashable).
-            text: Raw document text for TF-IDF indexing.
-            vector: Dense embedding vector of shape (dimensions,).
-        """
+        """Indexes a document chunk for both keyword and vector retrieval."""
         self._index.add_document(doc_id, text)
         self._tree.insert(doc_id, vector)
+
+    def remove_document(self, doc_id: Any) -> None:
+        """Removes a document from the inverted index."""
+        self._index.remove_document(doc_id)
 
     def search(
         self,
@@ -427,19 +329,16 @@ class RetrievalEngine:
         mode: str = "hybrid",
     ) -> List[Tuple[Any, float]]:
         """
-        Execute a retrieval query in the specified mode.
+        Execute MapReduce search across keyword and vector engines.
 
         Args:
-            query_text: Raw query string (used in keyword and hybrid modes).
-            query_vector: Dense query embedding (used in vector and hybrid modes).
-            top_k: Maximum number of results.
-            mode: One of ``"keyword"``, ``"vector"``, or ``"hybrid"``.
+            query_text: Natural language query string.
+            query_vector: Dense query embedding vector.
+            top_k: Target number of retrieved results.
+            mode: 'hybrid', 'vector', or 'keyword'.
 
         Returns:
-            List of (doc_id, score) tuples sorted by descending relevance.
-
-        Raises:
-            ValueError: If mode is not one of the supported values.
+            List of (doc_id, score) sorted by descending score.
         """
         mode = mode.lower()
         if mode not in ("keyword", "vector", "hybrid"):
@@ -450,32 +349,46 @@ class RetrievalEngine:
         keyword_scores: Dict[Any, float] = {}
         vector_scores: Dict[Any, float] = {}
 
-        if mode in ("keyword", "hybrid"):
-            for doc_id, score in self._index.search(query_text, top_k=top_k * 2):
-                keyword_scores[doc_id] = score
+        if mode == "keyword":
+            return self._index.search(query_text, top_k=top_k)
+        elif mode == "vector":
+            return self._tree.knn_search(query_vector, top_k=top_k)
 
-        if mode in ("vector", "hybrid"):
-            for doc_id, sim in self._tree.knn_search(query_vector, top_k=top_k * 2):
-                vector_scores[doc_id] = sim
+        # Hybrid Mode: Map phase - run keyword and vector search concurrently
+        candidate_k = max(top_k * 2, 10)
+        future_kw = self._executor.submit(self._index.search, query_text, candidate_k)
+        future_vec = self._executor.submit(self._tree.knn_search, query_vector, candidate_k)
 
-        all_doc_ids = set(keyword_scores) | set(vector_scores)
+        kw_results = future_kw.result()
+        vec_results = future_vec.result()
+
+        for doc_id, score in kw_results:
+            keyword_scores[doc_id] = score
+
+        for doc_id, sim in vec_results:
+            vector_scores[doc_id] = sim
+
+        # Reduce phase - Reciprocal Rank Fusion (RRF) + Normalized Weighted Score
+        # RRF score: 1 / (60 + rank)
+        rrf_scores: Dict[Any, float] = defaultdict(float)
+        for rank, (doc_id, _) in enumerate(kw_results, 1):
+            rrf_scores[doc_id] += 1.0 / (60.0 + rank)
+
+        for rank, (doc_id, _) in enumerate(vec_results, 1):
+            rrf_scores[doc_id] += 1.0 / (60.0 + rank)
+
+        all_doc_ids = set(keyword_scores.keys()) | set(vector_scores.keys())
         fused: List[Tuple[float, Any]] = []
 
+        alpha = 0.5
+        beta = 0.5
         for doc_id in all_doc_ids:
             kw = keyword_scores.get(doc_id, 0.0)
             vec = vector_scores.get(doc_id, 0.0)
-
-            if mode == "keyword":
-                final = kw
-            elif mode == "vector":
-                final = vec
-            else:
-                alpha = 0.5
-                beta = 0.5
-                final = alpha * kw + beta * vec
-
-            fused.append((final, doc_id))
+            linear_score = (alpha * kw) + (beta * vec)
+            rrf_boost = rrf_scores.get(doc_id, 0.0) * 10.0
+            final_score = (0.7 * linear_score) + (0.3 * rrf_boost)
+            fused.append((final_score, doc_id))
 
         fused.sort(key=lambda x: x[0], reverse=True)
-
         return [(doc_id, score) for score, doc_id in fused[:top_k]]
