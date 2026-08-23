@@ -1,5 +1,6 @@
 # DistributedRAG
 
+
 > Industry-grade Retrieval-Augmented Generation pipeline built from algorithmic first principles.
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
