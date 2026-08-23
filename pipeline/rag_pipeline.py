@@ -36,8 +36,8 @@ logger = logging.getLogger(__name__)
 
 _EMBEDDING_DIM    = int(os.environ.get("RAG_EMBEDDING_DIM", "128"))
 _OLLAMA_HOST      = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-_PRIMARY_MODEL    = os.environ.get("OLLAMA_PRIMARY", "qwen2.5-coder")
-_FALLBACK_MODEL   = os.environ.get("OLLAMA_FALLBACK", "codellama")
+_PRIMARY_MODEL    = os.environ.get("OLLAMA_PRIMARY", "qwen2.5-coder:1.5b")
+_FALLBACK_MODEL   = os.environ.get("OLLAMA_FALLBACK", "qwen2.5-coder")
 _OLLAMA_TIMEOUT   = int(os.environ.get("OLLAMA_TIMEOUT", "120"))
 _CACHE_TTL        = int(os.environ.get("RAG_CACHE_TTL", "3600"))
 
@@ -288,6 +288,12 @@ class OllamaClient:
                     "model": m,
                     "prompt": prompt,
                     "stream": False,
+                    "options": {
+                        "num_predict": 350,
+                        "temperature": 0.2,
+                        "top_p": 0.9,
+                        "num_ctx": 2048,
+                    },
                 })
                 self._last_model_used = m
                 return result.get("response", "")

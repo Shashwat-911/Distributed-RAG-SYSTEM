@@ -110,7 +110,7 @@ def _call_query_api(query_text: str, k: int, search_mode: str, cache_toggle: boo
         "use_cache": cache_toggle,
     }
     try:
-        with httpx.Client(timeout=60.0) as client:
+        with httpx.Client(timeout=120.0) as client:
             resp = client.post(f"{API_BASE}/query", json=payload)
             if resp.status_code == 200:
                 return resp.json()
