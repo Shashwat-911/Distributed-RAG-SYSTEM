@@ -22,7 +22,7 @@ import streamlit as st
 # ─────────────────────────────────────────────────────────────────────────────
 
 import os
-API_BASE = os.environ.get("RAG_API_BASE", "http://localhost:8000")
+DEFAULT_API_BASE = os.environ.get("RAG_API_BASE") or os.environ.get("API_BASE", "http://localhost:8000")
 
 st.set_page_config(
     page_title="DistributedRAG",
@@ -66,7 +66,14 @@ with st.sidebar:
     mode = st.selectbox("Retrieval Mode", options=["hybrid", "keyword", "vector"], index=0)
     use_cache = st.checkbox("Use Cache", value=True)
     st.divider()
-    st.caption("Target API: `" + API_BASE + "`")
+    api_url_input = st.text_input(
+        "Backend API URL",
+        value=st.session_state.get("api_base", DEFAULT_API_BASE),
+        help="Change this to your deployed FastAPI backend URL or ngrok tunnel",
+    )
+    API_BASE = api_url_input.rstrip("/")
+    st.session_state["api_base"] = API_BASE
+    st.caption(f"Target API: `{API_BASE}`")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
