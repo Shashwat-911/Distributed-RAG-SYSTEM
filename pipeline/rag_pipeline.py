@@ -22,11 +22,11 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 try:
-    from rag_core.cache.cache_engine import LRUCache
+    from rag_core.cache.cache_engine import LRUCache, ShardedAeroCache
     from rag_core.retrieval.retrieval_engine import RetrievalEngine
     from rag_core.diff.diff_engine import Chunker, DiffEngine
 except ImportError:
-    from cache.cache_engine import LRUCache
+    from cache.cache_engine import LRUCache, ShardedAeroCache
     from retrieval.retrieval_engine import RetrievalEngine
     from diff.diff_engine import Chunker, DiffEngine
 
@@ -522,7 +522,13 @@ class RAGPipeline:
             fallback_model: Fallback Ollama model.
         """
         self._store: DocumentStore = DocumentStore()
-        self._cache: LRUCache = LRUCache(capacity=cache_capacity)
+        partition_cap = max(16, cache_capacity // 4)
+        self._cache: ShardedAeroCache = ShardedAeroCache(
+            num_partitions=4,
+            partition_capacity=partition_cap,
+            virtual_nodes=150,
+            default_ttl=_CACHE_TTL,
+        )
         self._llm: OllamaClient = OllamaClient(
             base_url=ollama_base_url,
             primary_model=primary_model,
@@ -533,6 +539,11 @@ class RAGPipeline:
     def store(self) -> DocumentStore:
         """Underlying document store for index management."""
         return self._store
+
+    @property
+    def cache(self) -> ShardedAeroCache:
+        """AeroCache sharded cache instance."""
+        return self._cache
 
     @staticmethod
     def _cache_key(query: str, mode: str, top_k: int) -> str:
