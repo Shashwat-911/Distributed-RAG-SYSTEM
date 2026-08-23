@@ -4,9 +4,11 @@
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.111.0-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![Streamlit](https://img.shields.io/badge/Streamlit-1.35.0-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io/)
+[![Streamlit App](https://img.shields.io/badge/Streamlit%20Cloud-Live%20Demo-FF4B4B?logo=streamlit&logoColor=white)](https://distributed-rag.streamlit.app/)
 [![Ollama](https://img.shields.io/badge/Ollama-Local%20LLM-black?logo=ollama&logoColor=white)](https://ollama.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+🚀 **Live Interactive Demo:** [https://distributed-rag.streamlit.app/](https://distributed-rag.streamlit.app/)
 
 ---
 
@@ -121,7 +123,8 @@ python run.py
 ```
 
 ### 6. Open URLs
-- **Web UI:** http://localhost:8501
+- **Live Cloud Web UI:** https://distributed-rag.streamlit.app/
+- **Local Web UI:** http://localhost:8501
 - **REST API Docs:** http://localhost:8000/docs
 - **API Health:** http://localhost:8000/health
 

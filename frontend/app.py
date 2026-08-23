@@ -22,7 +22,25 @@ import streamlit as st
 # ─────────────────────────────────────────────────────────────────────────────
 
 import os
-DEFAULT_API_BASE = os.environ.get("RAG_API_BASE") or os.environ.get("API_BASE", "http://localhost:8000")
+
+def _resolve_default_api() -> str:
+    # 1. Check Streamlit Cloud secrets
+    try:
+        if hasattr(st, "secrets"):
+            if "RAG_API_BASE" in st.secrets:
+                return str(st.secrets["RAG_API_BASE"]).strip()
+            if "API_BASE" in st.secrets:
+                return str(st.secrets["API_BASE"]).strip()
+    except Exception:
+        pass
+    # 2. Check environment variables
+    env_val = os.environ.get("RAG_API_BASE") or os.environ.get("API_BASE")
+    if env_val:
+        return env_val.strip()
+    # 3. Default fallback
+    return "http://localhost:8000"
+
+DEFAULT_API_BASE = _resolve_default_api()
 
 st.set_page_config(
     page_title="DistributedRAG",
