@@ -37,8 +37,8 @@ def _resolve_default_api() -> str:
     env_val = os.environ.get("RAG_API_BASE") or os.environ.get("API_BASE")
     if env_val:
         return env_val.strip()
-    # 3. Default fallback
-    return "http://localhost:8000"
+    # 3. Default fallback to active tunnel
+    return "https://mail-shadows-slots-las.trycloudflare.com"
 
 DEFAULT_API_BASE = _resolve_default_api()
 
@@ -74,6 +74,10 @@ st.markdown(
 if "chat_history" not in st.session_state:
     st.session_state["chat_history"] = []
 
+# If old localhost is cached in session state, reset to default tunnel
+if st.session_state.get("api_base") in ("http://localhost:8000", "http://localhost:8000/"):
+    st.session_state["api_base"] = DEFAULT_API_BASE
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Sidebar: Query Configuration
 # ─────────────────────────────────────────────────────────────────────────────
@@ -87,9 +91,9 @@ with st.sidebar:
     api_url_input = st.text_input(
         "Backend API URL",
         value=st.session_state.get("api_base", DEFAULT_API_BASE),
-        help="Change this to your deployed FastAPI backend URL or ngrok tunnel",
+        help="Change this to your deployed FastAPI backend URL or tunnel URL",
     )
-    API_BASE = api_url_input.rstrip("/")
+    API_BASE = api_url_input.rstrip("/") if api_url_input.strip() else DEFAULT_API_BASE
     st.session_state["api_base"] = API_BASE
     st.caption(f"Target API: `{API_BASE}`")
 
