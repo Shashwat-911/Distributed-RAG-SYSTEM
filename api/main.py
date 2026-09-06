@@ -135,6 +135,7 @@ class HealthResponse(BaseModel):
     ollama_connected: bool
     docs_indexed: int
     cache_size: int
+    timestamp: float = Field(default_factory=time.time)
 
 
 class CacheStatsResponse(BaseModel):
@@ -371,6 +372,7 @@ async def health_check() -> HealthResponse:
         ollama_connected=ollama_connected,
         docs_indexed=docs_indexed,
         cache_size=cache_size,
+        timestamp=time.time(),
     )
 
 
