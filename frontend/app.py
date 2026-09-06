@@ -194,6 +194,19 @@ class ResilientApiClient:
 
         return False, None, last_error, latency_ms
 
+    def ping(self) -> tuple[bool, float, Optional[Dict[str, Any]], str]:
+        """Perform a quick ping check to determine health and latency."""
+        # Try /health first, fallback to /
+        t0 = time.perf_counter()
+        ok, data, err, latency_ms = self.request("GET", "/health", timeout=6.0, max_retries=1)
+        if ok and isinstance(data, dict):
+            return True, latency_ms, data, ""
+        # Fallback to root ping
+        ok_root, data_root, err_root, latency_ms_root = self.request("GET", "/", timeout=5.0, max_retries=0)
+        if ok_root:
+            return True, latency_ms_root, {"status": "online", "ollama_connected": False, "docs_indexed": 0, "cache_size": 0}, ""
+        return False, latency_ms, None, err or "Backend unreachable"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Sidebar: Query Configuration
 # ─────────────────────────────────────────────────────────────────────────────
