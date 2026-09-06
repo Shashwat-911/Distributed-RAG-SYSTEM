@@ -314,25 +314,15 @@ def _call_query_api(query_text: str, k: int, search_mode: str, cache_toggle: boo
 
 
 def _fetch_health() -> Optional[Dict[str, Any]]:
-    try:
-        with httpx.Client(timeout=5.0) as client:
-            resp = client.get(f"{API_BASE}/health")
-            if resp.status_code == 200:
-                return resp.json()
-    except Exception:
-        pass
-    return None
+    client = ResilientApiClient(st.session_state.get("api_base", API_BASE))
+    ok, data, _, _ = client.request("GET", "/health", timeout=6.0, max_retries=1)
+    return data if (ok and isinstance(data, dict)) else None
 
 
 def _fetch_cache_stats() -> Optional[Dict[str, Any]]:
-    try:
-        with httpx.Client(timeout=5.0) as client:
-            resp = client.get(f"{API_BASE}/cache/stats")
-            if resp.status_code == 200:
-                return resp.json()
-    except Exception:
-        pass
-    return None
+    client = ResilientApiClient(st.session_state.get("api_base", API_BASE))
+    ok, data, _, _ = client.request("GET", "/cache/stats", timeout=6.0, max_retries=1)
+    return data if (ok and isinstance(data, dict)) else None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -602,15 +592,12 @@ with tab_system:
     clear_cache_clicked = col_btn.button("🧹 Clear Cache", type="secondary")
 
     if clear_cache_clicked:
-        try:
-            with httpx.Client(timeout=5.0) as client:
-                resp = client.post(f"{API_BASE}/cache/clear")
-                if resp.status_code == 200:
-                    st.success("✅ Cache cleared successfully.")
-                else:
-                    st.error(f"Failed to clear cache: {resp.text}")
-        except Exception as exc:
-            st.error(f"Request error: {exc}")
+        client = ResilientApiClient(st.session_state.get("api_base", API_BASE))
+        ok, data, err, _ = client.request("POST", "/cache/clear", timeout=8.0)
+        if ok:
+            st.success("✅ Cache cleared successfully.")
+        else:
+            st.error(f"Failed to clear cache: {err}")
 
     # Dynamic status container
     status_placeholder = st.empty()
