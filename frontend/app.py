@@ -24,7 +24,16 @@ import streamlit as st
 import os
 
 def _resolve_default_api() -> str:
-    # 1. Check Streamlit Cloud secrets
+    # 1. Check Streamlit query params (e.g. ?api=https://... or ?api_base=...)
+    try:
+        if hasattr(st, "query_params"):
+            q_api = st.query_params.get("api") or st.query_params.get("api_base")
+            if q_api:
+                return str(q_api).strip().rstrip("/")
+    except Exception:
+        pass
+
+    # 2. Check Streamlit Cloud secrets
     try:
         if hasattr(st, "secrets"):
             if "RAG_API_BASE" in st.secrets:
