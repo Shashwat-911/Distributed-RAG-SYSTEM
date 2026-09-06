@@ -300,17 +300,16 @@ def _call_query_api(query_text: str, k: int, search_mode: str, cache_toggle: boo
         "mode": search_mode,
         "use_cache": cache_toggle,
     }
-    try:
-        with httpx.Client(timeout=120.0) as client:
-            resp = client.post(f"{API_BASE}/query", json=payload)
-            if resp.status_code == 200:
-                return resp.json()
-            else:
-                detail = resp.json().get("detail", resp.text) if resp.headers.get("content-type") == "application/json" else resp.text
-                st.error(f"API Error ({resp.status_code}): {detail}")
-                return None
-    except Exception as exc:
-        st.error(f"Connection failed: {exc}")
+    client = ResilientApiClient(st.session_state.get("api_base", API_BASE))
+    ok, data, err, latency = client.request("POST", "/query", json_data=payload, timeout=120.0, max_retries=2)
+    if ok and isinstance(data, dict):
+        return data
+    else:
+        if err and "503" in err and "Ollama" in err:
+            st.error(f"⚠️ {err}")
+            st.info("💡 Tip: Start Ollama on the backend host with `ollama run qwen2.5-coder`")
+        else:
+            st.error(f"⚠️ Query failed: {err}")
         return None
 
 
@@ -442,50 +441,46 @@ with tab_docs:
         if not doc_id_input.strip() or not doc_content_input.strip():
             st.error("Both Document ID and Content are required for ingestion.")
         else:
-            try:
-                with httpx.Client(timeout=30.0) as client:
-                    resp = client.post(
-                        f"{API_BASE}/documents/ingest",
-                        json={"doc_id": doc_id_input.strip(), "text": doc_content_input},
-                    )
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        st.success(f"✅ Added {data.get('chunks_added', 0)} chunks")
-                    else:
-                        st.error(f"Ingestion failed ({resp.status_code}): {resp.text}")
-            except Exception as exc:
-                st.error(f"Request failed: {exc}")
+            client = ResilientApiClient(st.session_state.get("api_base", API_BASE))
+            ok, data, err, _ = client.request(
+                "POST",
+                "/documents/ingest",
+                json_data={"doc_id": doc_id_input.strip(), "text": doc_content_input},
+                timeout=30.0,
+            )
+            if ok and isinstance(data, dict):
+                st.success(f"✅ Added {data.get('chunks_added', 0)} chunks")
+            else:
+                st.error(f"Ingestion failed: {err}")
 
     if update_clicked:
         if not doc_id_input.strip() or not doc_content_input.strip():
             st.error("Both Document ID and Content are required for update.")
         else:
-            try:
-                with httpx.Client(timeout=30.0) as client:
-                    resp = client.post(
-                        f"{API_BASE}/documents/update",
-                        json={"doc_id": doc_id_input.strip(), "new_text": doc_content_input},
-                    )
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        st.success(f"✅ Document `{data.get('doc_id')}` updated successfully via Hirschberg LCS Diff")
-                        m1, m2, m3 = st.columns(3)
-                        m1.markdown(
-                            f"<div class='metric-badge badge-green'>🟩 Chunks Added: {data.get('chunks_added', 0)}</div>",
-                            unsafe_allow_html=True,
-                        )
-                        m2.markdown(
-                            f"<div class='metric-badge badge-orange'>🟧 Chunks Modified: {data.get('chunks_modified', 0)}</div>",
-                            unsafe_allow_html=True,
-                        )
-                        m3.markdown(
-                            f"<div class='metric-badge badge-red'>🟥 Chunks Deleted: {data.get('chunks_deleted', 0)}</div>",
-                            unsafe_allow_html=True,
-                        )
-                    else:
-                        st.error(f"Update failed ({resp.status_code}): {resp.text}")
-            except Exception as exc:
-                st.error(f"Request failed: {exc}")
+            client = ResilientApiClient(st.session_state.get("api_base", API_BASE))
+            ok, data, err, _ = client.request(
+                "POST",
+                "/documents/update",
+                json_data={"doc_id": doc_id_input.strip(), "new_text": doc_content_input},
+                timeout=30.0,
+            )
+            if ok and isinstance(data, dict):
+                st.success(f"✅ Document `{data.get('doc_id')}` updated successfully via Hirschberg LCS Diff")
+                m1, m2, m3 = st.columns(3)
+                m1.markdown(
+                    f"<div class='metric-badge badge-green'>🟩 Chunks Added: {data.get('chunks_added', 0)}</div>",
+                    unsafe_allow_html=True,
+                )
+                m2.markdown(
+                    f"<div class='metric-badge badge-orange'>🟧 Chunks Modified: {data.get('chunks_modified', 0)}</div>",
+                    unsafe_allow_html=True,
+                )
+                m3.markdown(
+                    f"<div class='metric-badge badge-red'>🟥 Chunks Deleted: {data.get('chunks_deleted', 0)}</div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.error(f"Update failed: {err}")
 
     st.divider()
 
@@ -498,15 +493,16 @@ with tab_docs:
         if not delete_doc_id.strip():
             st.error("Please provide a Document ID to delete.")
         else:
-            try:
-                with httpx.Client(timeout=10.0) as client:
-                    resp = client.delete(f"{API_BASE}/documents/{delete_doc_id.strip()}")
-                    if resp.status_code == 200:
-                        st.success(f"✅ Document `{delete_doc_id.strip()}` deleted successfully.")
-                    else:
-                        st.error(f"Deletion failed ({resp.status_code}): {resp.text}")
-            except Exception as exc:
-                st.error(f"Request failed: {exc}")
+            client = ResilientApiClient(st.session_state.get("api_base", API_BASE))
+            ok, data, err, _ = client.request(
+                "DELETE",
+                f"/documents/{delete_doc_id.strip()}",
+                timeout=15.0,
+            )
+            if ok:
+                st.success(f"✅ Document `{delete_doc_id.strip()}` deleted successfully.")
+            else:
+                st.error(f"Deletion failed: {err}")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -531,13 +527,16 @@ with tab_inspector:
                     "mode": search_mode,
                     "use_cache": False,
                 }
-                try:
-                    with httpx.Client(timeout=30.0) as client:
-                        resp = client.post(f"{API_BASE}/query", json=payload)
-                        if resp.status_code == 200:
-                            return resp.json().get("sources", [])
-                except Exception:
-                    pass
+                client = ResilientApiClient(st.session_state.get("api_base", API_BASE))
+                ok, data, err, _ = client.request(
+                    "POST",
+                    "/query",
+                    json_data=payload,
+                    timeout=30.0,
+                    max_retries=1,
+                )
+                if ok and isinstance(data, dict):
+                    return data.get("sources", [])
                 return []
 
             with st.spinner("Executing parallel retrieval across all 3 search modes..."):
