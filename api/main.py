@@ -24,6 +24,7 @@ for _p in (str(_workspace_root), str(_rag_core_dir), str(_current_dir)):
         sys.path.insert(0, _p)
 
 from fastapi import FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 try:
@@ -62,6 +63,15 @@ app = FastAPI(
     description="Algorithmic Retrieval-Augmented Generation REST API",
     version="1.0.0",
     lifespan=lifespan,
+)
+
+# Enable CORS for all origins to support tunnels (untun, ngrok, cloudflare) and remote clients
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
