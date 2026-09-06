@@ -274,6 +274,17 @@ with st.sidebar:
             """,
             unsafe_allow_html=True,
         )
+        with st.expander("🛠️ Connection Troubleshooting"):
+            st.markdown(
+                """
+                - **Running locally?** Start API with `python run.py`.
+                - **Using Cloud Tunnels (HF Spaces / Streamlit Cloud)?**
+                  1. Run in local terminal: `npx untun tunnel 8000` or `ngrok http 8000`.
+                  2. Copy the generated `https://...` URL.
+                  3. Paste it in the **Backend API URL** box above.
+                - **Using Render?** Free Render instances sleep after 15 min. Click **Test Ping** to wake it up (may take ~45s).
+                """
+            )
 
     st.caption(f"Active Target: `{API_BASE}`")
 
