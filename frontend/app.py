@@ -91,6 +91,21 @@ _dead_urls = {
 if st.session_state.get("api_base") in _dead_urls:
     st.session_state["api_base"] = DEFAULT_API_BASE
 
+if "api_base" not in st.session_state:
+    st.session_state["api_base"] = DEFAULT_API_BASE
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Resilient HTTP Client Engine
+# ─────────────────────────────────────────────────────────────────────────────
+
+TUNNEL_BYPASS_HEADERS = {
+    "ngrok-skip-browser-warning": "true",
+    "bypass-tunnel-reminder": "true",
+    "User-Agent": "DistributedRAG-Client/1.0",
+    "Accept": "application/json",
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Sidebar: Query Configuration
 # ─────────────────────────────────────────────────────────────────────────────
