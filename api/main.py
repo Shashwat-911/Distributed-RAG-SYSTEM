@@ -358,7 +358,16 @@ async def root_ping() -> Dict[str, Any]:
 
 @app.get("/health", response_model=HealthResponse, status_code=status.HTTP_200_OK)
 async def health_check() -> HealthResponse:
-    pipeline = _get_pipeline()
+    pipeline: Optional[RAGPipeline] = getattr(app.state, "pipeline", None)
+    if pipeline is None:
+        return HealthResponse(
+            status="initializing",
+            ollama_connected=False,
+            docs_indexed=0,
+            cache_size=0,
+            timestamp=time.time(),
+        )
+
     ollama_connected = pipeline._llm.health_check()
     with pipeline.store._lock:
         docs_indexed = len(pipeline.store._documents)
