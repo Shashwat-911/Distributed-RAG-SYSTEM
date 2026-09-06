@@ -1,12 +1,19 @@
 """
-Hugging Face Spaces entry point.
-Identical to app.py but reads API_BASE from environment variable
-so it can point to ngrok tunnel or Render backend.
+Hugging Face Spaces entry point for DistributedRAG.
+Forwards environment variables and executes the main Streamlit application.
 """
 import os
-import streamlit as st
+import sys
 
-API_BASE = os.environ.get("API_BASE", "http://localhost:8000")
+# Ensure directory is on sys.path
+_dir = os.path.dirname(os.path.abspath(__file__))
+if _dir not in sys.path:
+    sys.path.insert(0, _dir)
 
-# Re-export everything from app.py with overridden API_BASE
-exec(open(os.path.join(os.path.dirname(__file__), "app.py")).read())
+# Propagate API_BASE to RAG_API_BASE if set in Space secrets
+if "API_BASE" in os.environ and "RAG_API_BASE" not in os.environ:
+    os.environ["RAG_API_BASE"] = os.environ["API_BASE"]
+
+app_path = os.path.join(_dir, "app.py")
+with open(app_path, "r", encoding="utf-8") as f:
+    exec(f.read(), globals())
