@@ -37,8 +37,8 @@ def _resolve_default_api() -> str:
     env_val = os.environ.get("RAG_API_BASE") or os.environ.get("API_BASE")
     if env_val:
         return env_val.strip()
-    # 3. Default fallback to active tunnel
-    return "https://mail-shadows-slots-las.trycloudflare.com"
+    # 3. Default fallback to local development
+    return "http://localhost:8000"
 
 DEFAULT_API_BASE = _resolve_default_api()
 
@@ -74,8 +74,12 @@ st.markdown(
 if "chat_history" not in st.session_state:
     st.session_state["chat_history"] = []
 
-# If old localhost is cached in session state, reset to default tunnel
-if st.session_state.get("api_base") in ("http://localhost:8000", "http://localhost:8000/"):
+# Clear expired or obsolete tunnel URLs that were cached in previous sessions
+_dead_urls = {
+    "https://mail-shadows-slots-las.trycloudflare.com",
+    "http://mail-shadows-slots-las.trycloudflare.com",
+}
+if st.session_state.get("api_base") in _dead_urls:
     st.session_state["api_base"] = DEFAULT_API_BASE
 
 # ─────────────────────────────────────────────────────────────────────────────
