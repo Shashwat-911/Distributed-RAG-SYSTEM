@@ -106,6 +106,84 @@ TUNNEL_BYPASS_HEADERS = {
     "Accept": "application/json",
 }
 
+
+class ResilientApiClient:
+    """HTTP Client tailored for deployed environments, tunnels, and cold starts."""
+
+    def __init__(self, base_url: str):
+        self.base_url = base_url.rstrip("/")
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        json_data: Optional[Dict[str, Any]] = None,
+        timeout: float = 30.0,
+        max_retries: int = 2,
+    ) -> tuple[bool, Optional[Any], Optional[str], float]:
+        """Execute request with retries, tunnel bypass headers, and cold-start tolerance.
+
+        Returns:
+            (success: bool, parsed_data: Optional[Any], error_message: Optional[str], latency_ms: float)
+        """
+        url = f"{self.base_url}{path}"
+        last_error = ""
+
+        for attempt in range(max_retries + 1):
+            t0 = time.perf_counter()
+            try:
+                with httpx.Client(timeout=timeout, headers=TUNNEL_BYPASS_HEADERS, follow_redirects=True) as client:
+                    if method.upper() == "GET":
+                        resp = client.get(url)
+                    elif method.upper() == "POST":
+                        resp = client.post(url, json=json_data)
+                    elif method.upper() == "DELETE":
+                        resp = client.delete(url)
+                    else:
+                        resp = client.request(method, url, json=json_data)
+
+                    latency_ms = (time.perf_counter() - t0) * 1000.0
+
+                    if resp.status_code == 200:
+                        try:
+                            return True, resp.json(), None, latency_ms
+                        except Exception:
+                            return True, resp.text, None, latency_ms
+
+                    # If server returned 502/503/504, it might be cold-starting
+                    detail = ""
+                    try:
+                        detail = resp.json().get("detail", resp.text)
+                    except Exception:
+                        detail = resp.text[:200]
+
+                    if resp.status_code in (502, 503, 504) and attempt < max_retries:
+                        time.sleep(1.0 * (attempt + 1))
+                        continue
+
+                    return False, None, f"HTTP {resp.status_code}: {detail}", latency_ms
+
+            except (httpx.ConnectTimeout, httpx.ReadTimeout) as exc:
+                latency_ms = (time.perf_counter() - t0) * 1000.0
+                last_error = f"Connection timeout ({timeout}s). Backend may be cold-starting: {exc}"
+                if attempt < max_retries:
+                    time.sleep(1.2 * (attempt + 1))
+                    continue
+            except httpx.ConnectError as exc:
+                latency_ms = (time.perf_counter() - t0) * 1000.0
+                last_error = f"Cannot reach host at `{self.base_url}`. Check if tunnel or server is online: {exc}"
+                if attempt < max_retries:
+                    time.sleep(0.8 * (attempt + 1))
+                    continue
+            except Exception as exc:
+                latency_ms = (time.perf_counter() - t0) * 1000.0
+                last_error = f"Connection error: {exc}"
+                if attempt < max_retries:
+                    time.sleep(0.8 * (attempt + 1))
+                    continue
+
+        return False, None, last_error, latency_ms
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Sidebar: Query Configuration
 # ─────────────────────────────────────────────────────────────────────────────
