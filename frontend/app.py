@@ -235,6 +235,14 @@ with st.sidebar:
 
     api_client = ResilientApiClient(API_BASE)
 
+    btn_col1, btn_col2 = st.columns(2)
+    test_clicked = btn_col1.button("⚡ Test Ping", use_container_width=True)
+    reset_clicked = btn_col2.button("🔄 Reset URL", use_container_width=True)
+
+    if reset_clicked:
+        st.session_state["api_base"] = DEFAULT_API_BASE
+        st.rerun()
+
     # Connection Status Banner
     is_online, ping_ms, health_info, ping_err = api_client.ping()
     if is_online:
