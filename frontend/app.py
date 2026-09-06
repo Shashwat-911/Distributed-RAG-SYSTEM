@@ -72,8 +72,16 @@ st.markdown(
     .badge-orange { background-color: rgba(219, 109, 40, 0.2); color: #db6d28; border: 1px solid #db6d28; }
     .badge-red { background-color: rgba(207, 34, 46, 0.2); color: #cf222e; border: 1px solid #cf222e; }
     .badge-blue { background-color: rgba(9, 105, 218, 0.2); color: #0969da; border: 1px solid #0969da; }
-    .status-online { color: #2ea44f; font-size: 1.6rem; font-weight: 700; }
-    .status-offline { color: #cf222e; font-size: 1.6rem; font-weight: 700; }
+    .status-online { color: #2ea44f; font-size: 1.4rem; font-weight: 700; }
+    .status-offline { color: #cf222e; font-size: 1.4rem; font-weight: 700; }
+    .status-warning { color: #db6d28; font-size: 1.4rem; font-weight: 700; }
+    .conn-card {
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        padding: 10px 12px;
+        margin-bottom: 12px;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -216,15 +224,50 @@ with st.sidebar:
     top_k = st.slider("Top K Results", min_value=1, max_value=10, value=5, step=1)
     mode = st.selectbox("Retrieval Mode", options=["hybrid", "keyword", "vector"], index=0)
     use_cache = st.checkbox("Use Cache", value=True)
-    st.divider()
+    st.subheader("🌐 Backend Connection")
     api_url_input = st.text_input(
         "Backend API URL",
         value=st.session_state.get("api_base", DEFAULT_API_BASE),
-        help="Change this to your deployed FastAPI backend URL or tunnel URL",
+        help="Paste your public tunnel URL (e.g. ngrok, untun) or Render URL here",
     )
     API_BASE = api_url_input.rstrip("/") if api_url_input.strip() else DEFAULT_API_BASE
     st.session_state["api_base"] = API_BASE
-    st.caption(f"Target API: `{API_BASE}`")
+
+    api_client = ResilientApiClient(API_BASE)
+
+    # Connection Status Banner
+    is_online, ping_ms, health_info, ping_err = api_client.ping()
+    if is_online:
+        ollama_ok = health_info.get("ollama_connected", False) if health_info else False
+        status_text = "🟢 Connected" if ollama_ok else "🟡 Online (Ollama Offline)"
+        badge_cls = "badge-green" if ollama_ok else "badge-orange"
+        st.markdown(
+            f"""
+            <div class='conn-card'>
+                <span class='metric-badge {badge_cls}'>{status_text}</span>
+                <span style='float: right; font-size: 0.85rem; color: #888;'>⏱️ {ping_ms:.0f} ms</span>
+                <div style='margin-top: 6px; font-size: 0.8rem;'>
+                    <b>Docs:</b> {health_info.get('docs_indexed', 0) if health_info else 0} | 
+                    <b>Cache:</b> {health_info.get('cache_size', 0) if health_info else 0}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            f"""
+            <div class='conn-card'>
+                <span class='metric-badge badge-red'>🔴 Disconnected</span>
+                <div style='margin-top: 6px; font-size: 0.8rem; color: #ff7b72;'>
+                    Target unreachable: <code>{API_BASE}</code>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.caption(f"Active Target: `{API_BASE}`")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
