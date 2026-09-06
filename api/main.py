@@ -345,6 +345,16 @@ async def query_pipeline(payload: QueryRequest) -> QueryResponse:
         )
 
 
+@app.get("/", status_code=status.HTTP_200_OK)
+async def root_ping() -> Dict[str, Any]:
+    return {
+        "service": "DistributedRAG API",
+        "status": "online",
+        "version": "1.0.0",
+        "timestamp": time.time(),
+    }
+
+
 @app.get("/health", response_model=HealthResponse, status_code=status.HTTP_200_OK)
 async def health_check() -> HealthResponse:
     pipeline = _get_pipeline()
