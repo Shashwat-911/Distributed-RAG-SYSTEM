@@ -144,6 +144,16 @@ class ResilientApiClient:
 
                     latency_ms = (time.perf_counter() - t0) * 1000.0
 
+                    content_type = resp.headers.get("content-type", "")
+                    if "text/html" in content_type and resp.status_code == 200:
+                        # ngrok or Cloudflare interstitial HTML warning page
+                        return (
+                            False,
+                            None,
+                            "Tunnel returned an HTML warning/challenge page instead of JSON. Ensure the tunnel is running.",
+                            latency_ms,
+                        )
+
                     if resp.status_code == 200:
                         try:
                             return True, resp.json(), None, latency_ms
