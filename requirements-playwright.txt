@@ -1,0 +1,3 @@
+# Only the real frontend is started by the deterministic browser suite.
+streamlit==1.66.1
+httpx>=0.27,<1

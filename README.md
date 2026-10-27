@@ -1,5 +1,7 @@
 # DistributedRAG
 
+> **Playwright branch:** Runnable browser tests and workshop instructions are in [docs/PLAYWRIGHT.md](docs/PLAYWRIGHT.md). Start with `npm ci`, `npx playwright install chromium`, then `npm run test:e2e` (also install `requirements-playwright.txt`). For ATF repository import, set the branch/ref to **playwright**.
+
 
 > Industry-grade Retrieval-Augmented Generation pipeline built from algorithmic first principles.
 

@@ -10,3 +10,9 @@ ENV/
 *.db
 .pytest_cache/
 .DS_Store
+
+# Playwright dependencies and generated evidence
+node_modules/
+playwright-report/
+test-results/
+.playwright/
